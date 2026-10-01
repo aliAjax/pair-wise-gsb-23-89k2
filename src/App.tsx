@@ -1,158 +1,110 @@
+import { useMemo, useReducer, useState } from "react";
 import "./styles.css";
+import { initialState } from "./seed";
+import { reducer } from "./store";
+import { OpsPanel, PermitsPanel, QueuePanel } from "./panels-ops";
+import { AuditPanel, OfflinePanel } from "./panels-offline";
+import type { ReasonCode } from "./types";
+import { reasonText } from "./domain";
+import { Badge } from "./ui";
 
-const project = {
-  "id": "hxwl-09",
-  "port": 5109,
-  "title": "半导体洁净室巡检",
-  "subtitle": "洁净等级阈值、粒子计数与异常处理看板",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#0f766e",
-    "#2563eb",
-    "#e11d48"
-  ],
-  "domain": "洁净室巡检",
-  "users": [
-    "巡检员",
-    "厂务工程师",
-    "班组长"
-  ],
-  "metrics": [
-    "粒子异常",
-    "压差异常",
-    "温湿度偏移",
-    "待处理"
-  ],
-  "filters": [
-    "ISO 5",
-    "ISO 6",
-    "ISO 7",
-    "黄光区"
-  ],
-  "fields": [
-    "房间编号",
-    "洁净等级",
-    "粒子计数",
-    "温湿度",
-    "压差",
-    "设备状态",
-    "处理备注"
-  ],
-  "records": [
-    [
-      "CR-1201",
-      "ISO 5",
-      "异常",
-      "0.5um粒子超限，已通知厂务"
-    ],
-    [
-      "CR-2107",
-      "ISO 6",
-      "稳定",
-      "压差15Pa，温湿度正常"
-    ],
-    [
-      "Y-0302",
-      "黄光区",
-      "关注",
-      "湿度接近上限"
-    ]
-  ]
-};
+const TABS = [
+  { id: "ops", label: "门禁操作页" },
+  { id: "permits", label: "许可 / 物料 / 规则" },
+  { id: "offline", label: "离线门控与回传" },
+  { id: "queue", label: "待处理队列" },
+  { id: "audit", label: "追溯记录" },
+] as const;
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
+type TabId = (typeof TABS)[number]["id"];
 
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
+function Metric({ label, value, tone }: { label: string; value: number | string; tone: string }) {
   return (
     <article className="metric-card">
       <span>{label}</span>
       <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
+      <i className={`tone-${tone}`} />
     </article>
   );
 }
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const [s, dispatch] = useReducer(reducer, undefined, initialState);
+  const [tab, setTab] = useState<TabId>("ops");
+
+  const waiting = s.queue.filter((q) => q.status === "waiting").length;
+  const heldEvents = s.gateEvents.filter((e) => e.state === "held").length;
+  const pendingEvents = s.gateEvents.filter((e) => e.state === "queued" || e.state === "held").length;
+  const occupied = Object.values(s.occupancy).filter(Boolean).length;
+
+  const lastBlock = useMemo(() => {
+    const a = s.audit.find((x) => x.reasonCode);
+    if (!a) return undefined;
+    return { code: a.reasonCode as ReasonCode, text: a.reasonText ?? reasonText(a.reasonCode as ReasonCode) };
+  }, [s.audit]);
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <p className="eyebrow">hxwl-09 · port 5109</p>
+          <h1>半导体洁净室门禁联动</h1>
+          <p className="subtitle">
+            人员组 · 房间 · 物料 · 灭菌有效期 · 通行许可 全链路联动；互锁通道同刻只进一组，
+            物料过期 / 压差不合格停在外门；断网门控按许可编号合并、同字段两版留档等班长裁决。
+          </p>
         </div>
         <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
+          <span>系统状态</span>
+          <strong>
+            <Badge kind={s.online ? "ok" : "danger"}>{s.online ? "在线" : "断网离线"}</Badge>
+          </strong>
+          <span className="dim">门控缓存：{s.gateCacheAt ?? "—"}</span>
+          <button onClick={() => dispatch({ type: "RESET" })}>重置演示数据</button>
         </div>
       </section>
 
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
+        <Metric label="互锁通道占用" value={`${occupied}/${s.channels.length}`} tone={occupied ? "warn" : "ok"} />
+        <Metric label="有效许可" value={s.permits.filter((p) => p.status === "active").length} tone="ok" />
+        <Metric label="失效/冲突待处理" value={s.permits.filter((p) => p.status === "stale" || p.status === "conflict").length} tone="danger" />
+        <Metric label="队列等待" value={waiting} tone={waiting ? "warn" : "ok"} />
+        <Metric label="离线门事件待回传" value={pendingEvents} tone={pendingEvents ? "warn" : "ok"} />
       </section>
 
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
+      {lastBlock && (
+        <div className="global-banner">
+          <span>⛔</span>
           <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
+            <strong>最近阻挡原因（操作页与追溯记录同源）</strong>
+            <p>
+              <code>{lastBlock.code}</code> {lastBlock.text}
+            </p>
           </div>
-          <button>导出摘要</button>
         </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      )}
+
+      <nav className="tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={tab === t.id ? "tab active" : "tab"}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+            {t.id === "queue" && waiting > 0 && <em className="tab-dot">{waiting}</em>}
+            {t.id === "offline" && (heldEvents > 0 || pendingEvents > 0) && (
+              <em className="tab-dot">{heldEvents || pendingEvents}</em>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "ops" && <OpsPanel s={s} dispatch={dispatch} />}
+      {tab === "permits" && <PermitsPanel s={s} dispatch={dispatch} />}
+      {tab === "offline" && <OfflinePanel s={s} dispatch={dispatch} />}
+      {tab === "queue" && <QueuePanel s={s} dispatch={dispatch} />}
+      {tab === "audit" && <AuditPanel s={s} dispatch={dispatch} />}
     </main>
   );
 }
